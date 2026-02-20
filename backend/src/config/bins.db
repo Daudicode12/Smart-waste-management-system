@@ -1,0 +1,340 @@
+-- ============================================================
+-- SMART WASTE MANAGEMENT SYSTEM — DATABASE SCHEMA
+-- Target: Supabase (PostgreSQL)
+-- Run this in the Supabase SQL Editor
+-- ============================================================
+
+
+-- 1. USERS TABLE  (created first — referenced by alerts, collection_logs, notifications)
+-- Admin users, waste collectors, and operators who access the dashboard.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT NOT NULL UNIQUE,
+    full_name TEXT NOT NULL,
+    phone TEXT,
+    role TEXT NOT NULL DEFAULT 'collector',   -- admin, collector, operator
+    avatar_url TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+
+-- 2. BINS TABLE
+-- Represents each physical smart waste bin deployed in the field.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bin_code TEXT NOT NULL UNIQUE,
+    location TEXT NOT NULL,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    bin_type TEXT NOT NULL DEFAULT 'general',       -- general, organic, recyclable, hazardous
+    status TEXT NOT NULL DEFAULT 'active',           -- active, maintenance, decommissioned
+    fill_level INTEGER NOT NULL DEFAULT 0,           -- current fill % (0-100), updated by latest reading
+    last_emptied TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+
+-- 3. SENSOR READINGS TABLE
+-- Stores every data payload sent from the ESP32 microcontroller.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sensor_readings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bin_id UUID NOT NULL REFERENCES bins(id) ON DELETE CASCADE,
+    fill_level INTEGER NOT NULL CHECK (fill_level BETWEEN 0 AND 100),   -- ultrasonic sensor (%)
+    waste_type TEXT,                                                      -- IR sensor classification
+    weight DOUBLE PRECISION,                                              -- load cell (kg)
+    gas_level DOUBLE PRECISION,                                           -- gas sensor (ppm)
+    temperature DOUBLE PRECISION,                                         -- temperature (°C)
+    moisture DOUBLE PRECISION,                                            -- moisture sensor (%)
+    battery_level INTEGER,                                                -- ESP32 battery (%)
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+
+-- 4. ALERTS TABLE
+-- Generated automatically when sensor thresholds are exceeded.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bin_id UUID NOT NULL REFERENCES bins(id) ON DELETE CASCADE,
+    alert_type TEXT NOT NULL,        -- fill_warning, fill_critical, gas_detected, maintenance_needed
+    severity TEXT NOT NULL DEFAULT 'medium',  -- low, medium, high, critical
+    message TEXT,
+    resolved BOOLEAN NOT NULL DEFAULT FALSE,
+    resolved_at TIMESTAMP,
+    resolved_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+
+-- 5. COLLECTION LOGS TABLE
+-- Records every bin emptying / collection event.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS collection_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bin_id UUID NOT NULL REFERENCES bins(id) ON DELETE CASCADE,
+    collected_by UUID REFERENCES users(id),
+    fill_level_before INTEGER,       -- fill % right before collection
+    fill_level_after INTEGER DEFAULT 0,
+    notes TEXT,
+    collected_at TIMESTAMP DEFAULT NOW()
+);
+
+
+-- 6. NOTIFICATIONS TABLE
+-- Tracks SMS, email, and push notifications sent to users.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS notifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    alert_id UUID REFERENCES alerts(id) ON DELETE SET NULL,
+    channel TEXT NOT NULL,            -- sms, email, push
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending, sent, failed
+    sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+
+-- ============================================================
+-- INDEXES (for query performance)
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_sensor_readings_bin_id ON sensor_readings(bin_id);
+CREATE INDEX IF NOT EXISTS idx_sensor_readings_created_at ON sensor_readings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_bin_id ON alerts(bin_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(resolved);
+CREATE INDEX IF NOT EXISTS idx_collection_logs_bin_id ON collection_logs(bin_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+
+
+-- ============================================================
+-- TRIGGER: auto-update `updated_at` on bins and users
+-- ============================================================
+CREATE OR REPLACE FUNCTION update_modified_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_bins_updated_at
+    BEFORE UPDATE ON bins
+    FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+
+CREATE TRIGGER trg_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+
+
+-- ============================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES
+-- ============================================================
+
+-- ---- BINS ----
+ALTER TABLE bins ENABLE ROW LEVEL SECURITY;
+
+-- Anyone authenticated can read bins
+CREATE POLICY "Authenticated users can view bins"
+    ON bins FOR SELECT
+    USING (auth.role() = 'authenticated');
+
+-- Only admins can insert bins
+CREATE POLICY "Admins can insert bins"
+    ON bins FOR INSERT
+    WITH CHECK (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Only admins can update bins
+CREATE POLICY "Admins can update bins"
+    ON bins FOR UPDATE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Only admins can delete bins
+CREATE POLICY "Admins can delete bins"
+    ON bins FOR DELETE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Allow the service role (ESP32 backend) to update bins (fill_level, last_emptied)
+CREATE POLICY "Service role can update bins"
+    ON bins FOR UPDATE
+    USING (auth.role() = 'service_role');
+
+
+-- ---- SENSOR READINGS ----
+ALTER TABLE sensor_readings ENABLE ROW LEVEL SECURITY;
+
+-- Authenticated users can view readings
+CREATE POLICY "Authenticated users can view sensor readings"
+    ON sensor_readings FOR SELECT
+    USING (auth.role() = 'authenticated');
+
+-- Service role (backend receiving ESP32 data) can insert readings
+CREATE POLICY "Service role can insert sensor readings"
+    ON sensor_readings FOR INSERT
+    WITH CHECK (auth.role() = 'service_role');
+
+-- Admins can also insert readings (manual entry)
+CREATE POLICY "Admins can insert sensor readings"
+    ON sensor_readings FOR INSERT
+    WITH CHECK (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Only admins can delete readings
+CREATE POLICY "Admins can delete sensor readings"
+    ON sensor_readings FOR DELETE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+
+-- ---- ALERTS ----
+ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
+
+-- Authenticated users can view alerts
+CREATE POLICY "Authenticated users can view alerts"
+    ON alerts FOR SELECT
+    USING (auth.role() = 'authenticated');
+
+-- Service role can insert alerts (auto-generated by backend)
+CREATE POLICY "Service role can insert alerts"
+    ON alerts FOR INSERT
+    WITH CHECK (auth.role() = 'service_role');
+
+-- Admins and collectors can resolve alerts (update)
+CREATE POLICY "Admins and collectors can update alerts"
+    ON alerts FOR UPDATE
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE users.id = auth.uid()
+            AND users.role IN ('admin', 'collector')
+        )
+    );
+
+-- Only admins can delete alerts
+CREATE POLICY "Admins can delete alerts"
+    ON alerts FOR DELETE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+
+-- ---- USERS ----
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+
+-- Users can read their own profile
+CREATE POLICY "Users can view own profile"
+    ON users FOR SELECT
+    USING (auth.uid() = id);
+
+-- Admins can view all users
+CREATE POLICY "Admins can view all users"
+    ON users FOR SELECT
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Users can update their own profile
+CREATE POLICY "Users can update own profile"
+    ON users FOR UPDATE
+    USING (auth.uid() = id);
+
+-- Admins can update any user
+CREATE POLICY "Admins can update any user"
+    ON users FOR UPDATE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Admins can insert new users
+CREATE POLICY "Admins can insert users"
+    ON users FOR INSERT
+    WITH CHECK (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Admins can delete users
+CREATE POLICY "Admins can delete users"
+    ON users FOR DELETE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+
+-- ---- COLLECTION LOGS ----
+ALTER TABLE collection_logs ENABLE ROW LEVEL SECURITY;
+
+-- Authenticated users can view collection logs
+CREATE POLICY "Authenticated users can view collection logs"
+    ON collection_logs FOR SELECT
+    USING (auth.role() = 'authenticated');
+
+-- Collectors can insert their own collection logs
+CREATE POLICY "Collectors can insert collection logs"
+    ON collection_logs FOR INSERT
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE users.id = auth.uid()
+            AND users.role IN ('admin', 'collector')
+        )
+    );
+
+-- Admins can update collection logs
+CREATE POLICY "Admins can update collection logs"
+    ON collection_logs FOR UPDATE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Admins can delete collection logs
+CREATE POLICY "Admins can delete collection logs"
+    ON collection_logs FOR DELETE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+
+-- ---- NOTIFICATIONS ----
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+-- Users can view their own notifications
+CREATE POLICY "Users can view own notifications"
+    ON notifications FOR SELECT
+    USING (auth.uid() = user_id);
+
+-- Admins can view all notifications
+CREATE POLICY "Admins can view all notifications"
+    ON notifications FOR SELECT
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );
+
+-- Service role can insert notifications (sent by backend)
+CREATE POLICY "Service role can insert notifications"
+    ON notifications FOR INSERT
+    WITH CHECK (auth.role() = 'service_role');
+
+-- Service role can update notification status (mark as sent/failed)
+CREATE POLICY "Service role can update notifications"
+    ON notifications FOR UPDATE
+    USING (auth.role() = 'service_role');
+
+-- Admins can delete notifications
+CREATE POLICY "Admins can delete notifications"
+    ON notifications FOR DELETE
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'admin')
+    );

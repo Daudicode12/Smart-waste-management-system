@@ -1,7 +1,6 @@
 // importing necessary modules
 import express from 'express';
 import cors from 'cors';
-// import supabase from './src/config/supabase.js';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import morgan from 'morgan';
