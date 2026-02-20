@@ -18,13 +18,14 @@ async function validateSupabaseConnection() {
     }
 
     try {
-        const { data, error } = await supabase.from('test_table').select('*').limit(1);
+        // attempt a lightweight query to verify the connection
+        const { data, error } = await supabase.from('bins').select('id').limit(1);
         if (error) {
             throw error;
         }
-        console.log('Successfully connected to Supabase!');
+        console.log('[Supabase] Successfully connected!');
     } catch (error) {
-        console.error('Error connecting to Supabase:', error.message);
+        console.error('[Supabase] Connection error:', error.message);
         process.exit(1);
     }
 }
