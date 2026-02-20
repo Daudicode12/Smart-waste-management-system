@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // creating the supabase client using the URL and KEY from env fle
-const supabaseUrl = process.env.SUPABASE_url;
+const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -29,4 +29,4 @@ async function validateSupabaseConnection() {
     }
 }
 
-export default supabase;
+export { supabase, validateSupabaseConnection };

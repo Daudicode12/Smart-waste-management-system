@@ -1,13 +1,13 @@
 // importing necessary modules
 import express from 'express';
 import cors from 'cors';
-import supabase from './src/config/supabase.js';
+// import supabase from './src/config/supabase.js';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import deviceRoutes from './src/routes/deviceRoutes.js';
-import authRoutes from './src/routes/authRoutes.js';
-import userRoutes from './src/routes/userRoutes.js';
+// import deviceRoutes from './routes/deviceRoutes.js';
+// import authRoutes from './routes/authRoutes.js';
+// import userRoutes from './routes/userRoutes.js';
 
 // loading environment variables from .env file
 dotenv.config();
@@ -22,9 +22,9 @@ app.use(helmet());
 app.use(morgan('combined'));
 
 // defining routes for devices, authentication, and user management
-app.use('/api/devices', deviceRoutes);
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
+// app.use('/api/devices', deviceRoutes);
+// app.use('/api/auth', authRoutes);
+// app.use('/api/users', userRoutes);
 
 // exporting the app for use in server.js
 export default app;
