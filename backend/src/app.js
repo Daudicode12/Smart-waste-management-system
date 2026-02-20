@@ -4,7 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import morgan from 'morgan';
-// import deviceRoutes from './routes/deviceRoutes.js';
+import deviceRoutes from './routes/deviceRoutes.js';
 // import authRoutes from './routes/authRoutes.js';
 // import userRoutes from './routes/userRoutes.js';
 
@@ -21,7 +21,7 @@ app.use(helmet());
 app.use(morgan('combined'));
 
 // defining routes for devices, authentication, and user management
-// app.use('/api/devices', deviceRoutes);
+app.use('/api/devices', deviceRoutes);
 // app.use('/api/auth', authRoutes);
 // app.use('/api/users', userRoutes);
 
